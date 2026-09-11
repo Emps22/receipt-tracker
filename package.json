@@ -1,0 +1,9 @@
+{
+  "name": "receipt-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Photo receipt submission site backed by Google Sheets + Drive",
+  "dependencies": {
+    "googleapis": "^140.0.1"
+  }
+}
