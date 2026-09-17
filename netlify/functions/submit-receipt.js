@@ -1,12 +1,13 @@
 const { google } = require('googleapis');
-const { Readable } = require('stream');
+const { getStore } = require('@netlify/blobs');
 
-// Reads the service account credentials from environment variables.
+// Reads the Google service account credentials from environment variables.
 // Set these in Netlify: Site settings -> Environment variables
 //   GOOGLE_SERVICE_ACCOUNT_EMAIL
-//   GOOGLE_PRIVATE_KEY        (paste the full key; keep the \n escapes)
-//   GOOGLE_DRIVE_FOLDER_ID    (the Drive folder that will store photos)
-//   GOOGLE_SHEET_ID           (the spreadsheet that will log submissions)
+//   GOOGLE_PRIVATE_KEY   (paste the full key; keep the \n escapes)
+//   GOOGLE_SHEET_ID      (the spreadsheet that will log submissions)
+// Photos are stored in Netlify Blobs, not Google Drive, since service
+// accounts don't have their own Drive storage quota on non-Workspace accounts.
 function getAuth() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   const key = (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
@@ -18,18 +19,8 @@ function getAuth() {
   return new google.auth.JWT({
     email,
     key,
-    scopes: [
-      'https://www.googleapis.com/auth/drive',
-      'https://www.googleapis.com/auth/spreadsheets',
-    ],
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
-}
-
-function bufferToStream(buffer) {
-  const stream = new Readable();
-  stream.push(buffer);
-  stream.push(null);
-  return stream;
 }
 
 exports.handler = async (event) => {
@@ -44,46 +35,30 @@ exports.handler = async (event) => {
       return { statusCode: 400, body: JSON.stringify({ error: 'Missing receipt image' }) };
     }
 
-    const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
     const sheetId = process.env.GOOGLE_SHEET_ID;
-    if (!folderId || !sheetId) {
-      throw new Error('Missing GOOGLE_DRIVE_FOLDER_ID or GOOGLE_SHEET_ID env vars');
+    if (!sheetId) {
+      throw new Error('Missing GOOGLE_SHEET_ID env var');
     }
 
-    const auth = getAuth();
-    const drive = google.drive({ version: 'v3', auth });
-    const sheets = google.sheets({ version: 'v4', auth });
-
-    // 1. Upload the image to the shared Drive folder.
+    // 1. Store the photo in Netlify Blobs.
     const buffer = Buffer.from(imageBase64, 'base64');
-    const fileName = `receipt-${Date.now()}.${(mimeType.split('/')[1] || 'jpg')}`;
+    const extension = (mimeType.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+    const imageId = `receipt-${Date.now()}.${extension}`;
 
-    const uploadRes = await drive.files.create({
-      requestBody: {
-        name: fileName,
-        parents: [folderId],
-      },
-      media: {
-        mimeType,
-        body: bufferToStream(buffer),
-      },
-      fields: 'id',
+    const store = getStore('receipts');
+    await store.set(imageId, buffer, {
+      metadata: { mimeType },
     });
 
-    const fileId = uploadRes.data.id;
-
-    // 2. Make the file viewable by anyone with the link, so =IMAGE() can render it
-    //    and the reviewer can open it without needing Drive access themselves.
-    await drive.permissions.create({
-      fileId,
-      requestBody: { role: 'reader', type: 'anyone' },
-    });
-
-    const imageUrl = `https://drive.google.com/uc?export=view&id=${fileId}`;
-    const viewUrl = `https://drive.google.com/file/d/${fileId}/view`;
+    // 2. Build a public URL that serves the photo back through our own function.
+    const siteUrl = process.env.URL || `https://${event.headers.host}`;
+    const imageUrl = `${siteUrl}/.netlify/functions/get-receipt-image?id=${encodeURIComponent(imageId)}`;
 
     // 3. Append a row to the tracking sheet, with a live thumbnail via =IMAGE().
+    const auth = getAuth();
+    const sheets = google.sheets({ version: 'v4', auth });
     const submittedAt = new Date().toISOString();
+
     await sheets.spreadsheets.values.append({
       spreadsheetId: sheetId,
       range: 'Sheet1!A:G',
@@ -95,7 +70,7 @@ exports.handler = async (event) => {
           note || '',
           submitter || '',
           `=IMAGE("${imageUrl}")`,
-          viewUrl,
+          imageUrl,
           submittedAt,
         ]],
       },
@@ -103,7 +78,7 @@ exports.handler = async (event) => {
 
     return {
       statusCode: 200,
-      body: JSON.stringify({ ok: true, viewUrl }),
+      body: JSON.stringify({ ok: true, imageUrl }),
     };
   } catch (err) {
     console.error(err);
