@@ -2,8 +2,9 @@
   "name": "receipt-tracker",
   "version": "1.0.0",
   "private": true,
-  "description": "Photo receipt submission site backed by Google Sheets + Drive",
+  "description": "Photo receipt submission site backed by Google Sheets + Netlify Blobs",
   "dependencies": {
-    "googleapis": "^140.0.1"
+    "googleapis": "^140.0.1",
+    "@netlify/blobs": "^11.0.3"
   }
 }
