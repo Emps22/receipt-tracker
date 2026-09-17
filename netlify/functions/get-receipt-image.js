@@ -8,7 +8,11 @@ exports.handler = async (event) => {
   }
 
   try {
-    const store = getStore('receipts');
+    const store = getStore({
+      name: 'receipts',
+      siteID: process.env.NETLIFY_SITE_ID,
+      token: process.env.NETLIFY_API_TOKEN,
+    });
     const result = await store.getWithMetadata(id, { type: 'arrayBuffer' });
 
     if (!result) {
