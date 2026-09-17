@@ -50,4 +50,51 @@ exports.handler = async (event) => {
       throw new Error('Missing GOOGLE_SHEET_ID env var');
     }
 
-    //
+    // 1. Store the photo in Netlify Blobs.
+    const buffer = Buffer.from(imageBase64, 'base64');
+    const extension = (mimeType.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+    const imageId = `receipt-${Date.now()}.${extension}`;
+
+    const store = getReceiptStore();
+    await store.set(imageId, buffer, {
+      metadata: { mimeType },
+    });
+
+    // 2. Build a public URL that serves the photo back through our own function.
+    const siteUrl = process.env.URL || `https://${event.headers.host}`;
+    const imageUrl = `${siteUrl}/.netlify/functions/get-receipt-image?id=${encodeURIComponent(imageId)}`;
+
+    // 3. Append a row to the tracking sheet, with a live thumbnail via =IMAGE().
+    const auth = getAuth();
+    const sheets = google.sheets({ version: 'v4', auth });
+    const submittedAt = new Date().toISOString();
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: sheetId,
+      range: 'Sheet1!A:G',
+      valueInputOption: 'USER_ENTERED',
+      requestBody: {
+        values: [[
+          date || submittedAt.slice(0, 10),
+          amount || '',
+          note || '',
+          submitter || '',
+          `=IMAGE("${imageUrl}")`,
+          imageUrl,
+          submittedAt,
+        ]],
+      },
+    });
+
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ ok: true, imageUrl }),
+    };
+  } catch (err) {
+    console.error(err);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: err.message || 'Something went wrong' }),
+    };
+  }
+};
